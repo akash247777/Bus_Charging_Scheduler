@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.streamlit/
+*.egg-info/
+dist/
+build/
+.env
+venv/
+pdf_content.txt
+test_scheduler.py
+test_stations.py

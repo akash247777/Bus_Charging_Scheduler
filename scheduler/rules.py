@@ -151,6 +151,43 @@ class MinimizeTotalTime(Rule):
         return estimated_total_time
 
 
+class CustomFormulaRule(Rule):
+    """
+    A rule that evaluates a mathematical expression dynamically.
+    
+    Allows user-defined rules in the frontend without changing code files.
+    """
+    
+    def __init__(self, name: str, weight_key: str, formula: str):
+        self.name = name
+        self.weight_key = weight_key
+        self.formula = formula
+
+    def score(self, bus_id, operator, estimated_wait, estimated_total_time, context) -> float:
+        # Define a safe namespace for evaluation
+        eval_locals = {
+            "estimated_wait": estimated_wait,
+            "estimated_total_time": estimated_total_time,
+            "bus_id": bus_id,
+            "operator": operator,
+            "context": context,
+        }
+        # Pre-import standard math functions and add them to globals
+        import math
+        eval_globals = {
+            "__builtins__": None,
+            "math": math,
+            "abs": abs,
+            "min": min,
+            "max": max,
+            "round": round,
+        }
+        try:
+            return float(eval(self.formula, eval_globals, eval_locals))
+        except Exception:
+            return 0.0
+
+
 # Default rules — to add a new rule, just append to this list
 DEFAULT_RULES: list[Rule] = [
     MinimizeIndividualWait(),

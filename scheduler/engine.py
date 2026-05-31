@@ -198,6 +198,7 @@ def _select_charging_plan(
     weights: dict[str, float],
     station_managers: dict[str, StationManager],
     context: ScoringContext,
+    rules: list = None,
 ) -> ChargingPlan:
     """
     Select the best charging plan for a bus by scoring all valid plans.
@@ -235,6 +236,7 @@ def _select_charging_plan(
             estimated_total_wait,
             estimated_total_time,
             context, weights,
+            rules=rules,
         )
         
         # Prefer fewer stops as a tiebreaker (less delay from charging itself)
@@ -252,6 +254,7 @@ def run_scheduler(
     route: Route,
     weights: dict[str, float],
     scenario_name: str = "",
+    rules: list = None,
 ) -> ScheduleResult:
     """
     Run the scheduling simulation for a set of buses on a route.
@@ -268,6 +271,7 @@ def run_scheduler(
         route: Route configuration
         weights: Scoring weights {"individual": float, "operator": float, "overall": float}
         scenario_name: Name of the scenario (for display)
+        rules: Optional list of Rule objects to apply
         
     Returns:
         ScheduleResult with per-bus timelines and per-station logs
@@ -292,7 +296,7 @@ def run_scheduler(
         timeline = BusTimeline(bus=bus)
         
         # Select charging plan
-        plan = _select_charging_plan(bus, route, weights, station_managers, context)
+        plan = _select_charging_plan(bus, route, weights, station_managers, context, rules=rules)
         
         # Simulate the journey
         current_time = bus.departure_time

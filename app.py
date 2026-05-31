@@ -19,6 +19,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from scheduler.loader import load_route_config, load_scenario, discover_scenarios
 from scheduler.engine import run_scheduler
+from scheduler.rules import MinimizeIndividualWait, OperatorFairness, MinimizeTotalTime, CustomFormulaRule
+
 
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
@@ -256,6 +258,190 @@ def load_and_run(scenario_path: str, _route_hash: str):
 
 # ─── Main App ─────────────────────────────────────────────────────────────────
 
+# ─── Scenario Builder ─────────────────────────────────────────────────────────
+
+def render_scenario_builder(route):
+    st.markdown("""
+    <div class="section-header">
+        <h3>➕ Scenario Builder — Create Custom Departures Schedule</h3>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col_meta1, col_meta2 = st.columns(2)
+    with col_meta1:
+        s_name = st.text_input("Scenario Name", value="Custom Scenario", placeholder="e.g. Scenario 6 — Custom Spacing")
+    with col_meta2:
+        s_desc = st.text_input("Description", value="Custom scenario defined in UI", placeholder="e.g. Custom bunched start")
+        
+    st.markdown("#### ⚖️ Default Scenario Weights")
+    col_w1, col_w2, col_w3 = st.columns(3)
+    with col_w1:
+        s_w_ind = st.slider("Default Individual Weight", 0.0, 5.0, 1.0, 0.1, key="s_w_ind")
+    with col_w2:
+        s_w_op = st.slider("Default Operator Weight", 0.0, 5.0, 1.0, 0.1, key="s_w_op")
+    with col_w3:
+        s_w_ov = st.slider("Default Overall Weight", 0.0, 5.0, 1.0, 0.1, key="s_w_ov")
+        
+    st.markdown("#### 🚌 Departures Schedule Table")
+    st.info("You can add, delete, and edit rows in the table below. Make sure Bus IDs are unique and departure times are in `HH:MM` format.")
+    
+    # Initialize session state for editor data if not present
+    if "editor_data" not in st.session_state:
+        st.session_state.editor_data = [
+            {"Bus ID": "bus-BK-01", "Operator": "kpn", "Direction": "Bengaluru→Kochi", "Departure Time": "08:00"},
+            {"Bus ID": "bus-BK-02", "Operator": "freshbus", "Direction": "Bengaluru→Kochi", "Departure Time": "08:15"},
+            {"Bus ID": "bus-KB-01", "Operator": "flixbus", "Direction": "Kochi→Bengaluru", "Departure Time": "08:00"},
+            {"Bus ID": "bus-KB-02", "Operator": "kpn", "Direction": "Kochi→Bengaluru", "Departure Time": "08:15"},
+        ]
+        
+    # Configure columns
+    column_config = {
+        "Bus ID": st.column_config.TextColumn("Bus ID", required=True, help="Enter a unique identifier for the bus, e.g. bus-BK-01"),
+        "Operator": st.column_config.SelectboxColumn("Operator", options=["kpn", "flixbus", "freshbus"], required=True),
+        "Direction": st.column_config.SelectboxColumn("Direction", options=["Bengaluru→Kochi", "Kochi→Bengaluru"], required=True),
+        "Departure Time": st.column_config.TextColumn("Departure Time", required=True, help="Enter the departure time in HH:MM format, e.g. 19:30"),
+    }
+    
+    edited_df = st.data_editor(
+        pd.DataFrame(st.session_state.editor_data),
+        column_config=column_config,
+        num_rows="dynamic",
+        use_container_width=True,
+        key="scenario_data_editor"
+    )
+    
+    # Keep session state updated with editor changes
+    st.session_state.editor_data = edited_df.to_dict(orient="records")
+    
+    col_actions1, col_actions2 = st.columns(2)
+    with col_actions1:
+        run_mem = st.button("⚡ Run Scenario (In-Memory)", use_container_width=True)
+    with col_actions2:
+        save_disk = st.button("💾 Save Permanently to Disk & Run", use_container_width=True)
+        
+    if run_mem or save_disk:
+        # Validate data
+        rows = st.session_state.editor_data
+        if not rows:
+            st.error("Departure schedule cannot be empty!")
+            return
+            
+        bus_ids = []
+        parsed_buses = []
+        raw_buses = []
+        
+        from scheduler.models import Bus
+        from scheduler.loader import parse_time
+        
+        for idx, row in enumerate(rows):
+            bid = row.get("Bus ID")
+            op = row.get("Operator")
+            dir_str = row.get("Direction")
+            dep_time = row.get("Departure Time")
+            
+            if not bid or not op or not dir_str or not dep_time:
+                st.error(f"Row {idx+1} is missing required values!")
+                return
+                
+            if bid in bus_ids:
+                st.error(f"Duplicate Bus ID found: {bid}")
+                return
+            bus_ids.append(bid)
+            
+            # Validate time format
+            try:
+                if ":" not in dep_time or len(dep_time.split(":")) != 2:
+                    raise ValueError
+                hours, minutes = map(int, dep_time.split(":"))
+                if not (0 <= hours <= 23) or not (0 <= minutes <= 59):
+                    raise ValueError
+            except ValueError:
+                st.error(f"Invalid Departure Time format in row {idx+1}: '{dep_time}'. Must be HH:MM.")
+                return
+                
+            parsed_buses.append(Bus(
+                id=bid,
+                operator=op,
+                direction=dir_str,
+                departure_time=parse_time(dep_time)
+            ))
+            
+            raw_buses.append({
+                "id": bid,
+                "operator": op,
+                "direction": dir_str,
+                "departure_time": dep_time
+            })
+            
+        # Build custom scenario object
+        custom_scenario = {
+            "name": s_name,
+            "path": f"custom_memory_{len(st.session_state.custom_scenarios)}",
+            "is_custom": True,
+            "data": {
+                "name": s_name,
+                "description": s_desc,
+                "weights": {
+                    "individual": s_w_ind,
+                    "operator": s_w_op,
+                    "overall": s_w_ov,
+                },
+                "buses": parsed_buses,
+                "raw_buses": raw_buses
+            }
+        }
+        
+        if save_disk:
+            # Save to disk
+            import json
+            import re
+            # Create a slug from name
+            slug = re.sub(r'[^a-z0-9_]', '', s_name.lower().replace(" ", "_"))
+            if not slug:
+                slug = "custom_scenario"
+            file_name = f"scenario_{slug}.json"
+            file_path = os.path.join(PROJECT_ROOT, "data", "scenarios", file_name)
+            
+            disk_data = {
+                "name": s_name,
+                "description": s_desc,
+                "weights": {
+                    "individual": s_w_ind,
+                    "operator": s_w_op,
+                    "overall": s_w_ov
+                },
+                "buses": raw_buses
+            }
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(disk_data, f, indent=2)
+                st.success(f"Scenario saved to {file_path}!")
+                # Force refresh discover scenarios
+                st.cache_data.clear()
+            except Exception as e:
+                st.error(f"Failed to save scenario to disk: {e}")
+                return
+        else:
+            # Add to memory
+            st.session_state.custom_scenarios.append(custom_scenario)
+            st.success("Scenario created in memory!")
+            
+        # Set selection pointing to the new scenario
+        if save_disk:
+            scenarios = get_scenarios()
+            try:
+                new_idx = next(i for i, s in enumerate(scenarios) if s["name"] == s_name)
+                st.session_state.scenario_selector = new_idx
+            except StopIteration:
+                st.session_state.scenario_selector = 0
+        else:
+            st.session_state.scenario_selector = len(get_scenarios()) + len(st.session_state.custom_scenarios) - 1
+            
+        st.rerun()
+
+
+# ─── Main App ─────────────────────────────────────────────────────────────────
+
 def main():
     # Header
     st.markdown("""
@@ -267,7 +453,15 @@ def main():
 
     # Load route config
     route = load_config()
-    scenarios = get_scenarios()
+    
+    # Initialize session state lists if not present
+    if "custom_scenarios" not in st.session_state:
+        st.session_state.custom_scenarios = []
+    if "custom_rules" not in st.session_state:
+        st.session_state.custom_rules = []
+
+    # Discovered scenarios + memory custom scenarios
+    scenarios = get_scenarios() + st.session_state.custom_scenarios
 
     if not scenarios:
         st.error("No scenarios found! Please add scenario files to `data/scenarios/`.")
@@ -275,21 +469,126 @@ def main():
 
     # ─── Scenario Selector ────────────────────────────────────────────────
 
-    scenario_names = [s["name"] for s in scenarios]
+    scenario_names = [s["name"] for s in scenarios] + ["➕ Build Custom Scenario..."]
     selected_idx = st.selectbox(
         "📋 Select Scenario",
-        range(len(scenarios)),
+        range(len(scenarios) + 1),
         format_func=lambda i: scenario_names[i],
         key="scenario_selector",
     )
 
-    selected_scenario = scenarios[selected_idx]
+    if selected_idx == len(scenarios):
+        # Render Scenario Builder in the main area
+        render_scenario_builder(route)
+        return
 
-    # Load and run scheduler
-    scenario, result = load_and_run(
-        selected_scenario["path"],
-        f"{route.name}_{route.bus_defaults.battery_range_km}_{route.bus_defaults.speed_kmh}",
+    selected_scenario = scenarios[selected_idx]
+    is_custom = selected_scenario.get("is_custom", False)
+
+    # ─── Sidebar Controls (Tuning & Custom Rules) ─────────────────────────
+    st.sidebar.markdown("## ⚙️ Control Panel")
+    
+    # Get current scenario default weights
+    if is_custom:
+        default_weights = selected_scenario["data"]["weights"]
+    else:
+        temp_scenario = load_scenario(selected_scenario["path"])
+        default_weights = temp_scenario["weights"]
+        
+    st.sidebar.markdown("### ⚖️ Adjust Weights")
+    weight_ind = st.sidebar.slider("Individual Weight", 0.0, 5.0, float(default_weights.get("individual", 1.0)), 0.1, key="weight_ind")
+    weight_op = st.sidebar.slider("Operator Weight", 0.0, 5.0, float(default_weights.get("operator", 1.0)), 0.1, key="weight_op")
+    weight_ov = st.sidebar.slider("Overall Weight", 0.0, 5.0, float(default_weights.get("overall", 1.0)), 0.1, key="weight_ov")
+    
+    overridden_weights = {
+        "individual": weight_ind,
+        "operator": weight_op,
+        "overall": weight_ov,
+    }
+    
+    st.sidebar.markdown("### 🔧 Pluggable Rules")
+    enable_ind = st.sidebar.checkbox("Minimize Individual Wait", value=True, key="enable_ind")
+    enable_op = st.sidebar.checkbox("Operator Fairness", value=True, key="enable_op")
+    enable_tot = st.sidebar.checkbox("Minimize Total Time", value=True, key="enable_tot")
+    
+    # Build active rules list
+    active_rules = []
+    if enable_ind:
+        active_rules.append(MinimizeIndividualWait())
+    if enable_op:
+        active_rules.append(OperatorFairness())
+    if enable_tot:
+        active_rules.append(MinimizeTotalTime())
+        
+    # Custom Rules checkboxes
+    if st.session_state.custom_rules:
+        st.sidebar.markdown("#### Custom Rules")
+        for crule in st.session_state.custom_rules:
+            chk = st.sidebar.checkbox(f"Custom: {crule['name']}", value=True, key=f"crule_{crule['name']}")
+            if chk:
+                active_rules.append(CustomFormulaRule(crule['name'], crule['weight_key'], crule['formula']))
+                
+    # Add custom rule form
+    with st.sidebar.expander("➕ Add Custom Rule"):
+        c_name = st.text_input("Rule Name", key="c_name_input")
+        c_weight = st.selectbox("Weight Category", ["individual", "operator", "overall"], key="c_weight_input")
+        c_formula = st.text_input("Formula (e.g. estimated_wait * 2.0)", key="c_formula_input")
+        if st.button("Create Rule", key="create_rule_btn"):
+            if c_name and c_formula:
+                if any(r["name"] == c_name for r in st.session_state.custom_rules):
+                    st.error("Rule name already exists!")
+                else:
+                    st.session_state.custom_rules.append({
+                        "name": c_name,
+                        "weight_key": c_weight,
+                        "formula": c_formula
+                    })
+                    st.success(f"Rule '{c_name}' created!")
+                    st.rerun()
+            else:
+                st.error("Please fill name and formula!")
+                
+    # Delete custom rules form
+    if st.session_state.custom_rules:
+        with st.sidebar.expander("🗑️ Delete Custom Rules"):
+            for r in st.session_state.custom_rules:
+                if st.button(f"Delete '{r['name']}'", key=f"del_{r['name']}"):
+                    st.session_state.custom_rules = [x for x in st.session_state.custom_rules if x["name"] != r["name"]]
+                    st.rerun()
+
+    # ─── Load and Run Scheduler ──────────────────────────────────────────
+    
+    # Check overrides
+    has_weight_override = (
+        overridden_weights["individual"] != default_weights.get("individual") or
+        overridden_weights["operator"] != default_weights.get("operator") or
+        overridden_weights["overall"] != default_weights.get("overall")
     )
+    has_rule_override = (not enable_ind or not enable_op or not enable_tot or len(active_rules) > (int(enable_ind) + int(enable_op) + int(enable_tot)))
+
+    if is_custom:
+        scenario = selected_scenario["data"]
+        result = run_scheduler(
+            buses=scenario["buses"],
+            route=route,
+            weights=overridden_weights,
+            scenario_name=scenario["name"],
+            rules=active_rules,
+        )
+    elif has_weight_override or has_rule_override:
+        scenario = load_scenario(selected_scenario["path"])
+        result = run_scheduler(
+            buses=scenario["buses"],
+            route=route,
+            weights=overridden_weights,
+            scenario_name=scenario["name"],
+            rules=active_rules,
+        )
+    else:
+        scenario, result = load_and_run(
+            selected_scenario["path"],
+            f"{route.name}_{route.bus_defaults.battery_range_km}_{route.bus_defaults.speed_kmh}",
+        )
 
     # ─── Scenario Info ────────────────────────────────────────────────────
 
@@ -298,9 +597,9 @@ def main():
         <h4>{scenario['name']}</h4>
         <p>{scenario['description']}</p>
         <div style="margin-top: 0.75rem;">
-            <span class="weight-badge weight-individual">🎯 Individual: {scenario['weights']['individual']}</span>
-            <span class="weight-badge weight-operator">🏢 Operator: {scenario['weights']['operator']}</span>
-            <span class="weight-badge weight-overall">🌐 Overall: {scenario['weights']['overall']}</span>
+            <span class="weight-badge weight-individual">🎯 Individual: {overridden_weights['individual']}</span>
+            <span class="weight-badge weight-operator">🏢 Operator: {overridden_weights['operator']}</span>
+            <span class="weight-badge weight-overall">🌐 Overall: {overridden_weights['overall']}</span>
         </div>
     </div>
     """, unsafe_allow_html=True)

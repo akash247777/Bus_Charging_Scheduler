@@ -45,12 +45,14 @@ The app will open at `http://localhost:8501`.
 
 ## How to Change a Weight
 
+### 1. In the Frontend UI (Dynamic Tuning)
+Adjust the sliders in the sidebar under **"⚖️ Adjust Weights"** (Individual, Operator, Overall). The scheduler will dynamically re-run and update the charts, timelines, and logs in real-time.
+
+### 2. In Data Files (Permanent Default)
 Weights are stored in each scenario's JSON file under `data/scenarios/`.
 
-### Example: Increase operator fairness weight in Scenario 4
-
+#### Example: Increase operator fairness weight in Scenario 4
 Edit `data/scenarios/scenario_4.json`:
-
 ```json
 {
   "weights": {
@@ -60,19 +62,23 @@ Edit `data/scenarios/scenario_4.json`:
   }
 }
 ```
-
-Restart the app (or rerun in Streamlit) — the scheduler will produce a different schedule that more aggressively balances wait times across operators.
-
-**That's it.** One value, one obvious place.
+Restart the app — the scheduler will use the new defaults.
 
 ---
 
 ## How to Add a New Rule
 
-Rules live in `scheduler/rules.py`. Each rule is a class that inherits from `Rule`.
+### 1. In the Frontend UI (Dynamic Custom Rules)
+You can define scoring rules dynamically in the UI:
+1. In the sidebar, expand **"🔧 Pluggable Rules"** and click **"➕ Add Custom Rule"**.
+2. Give the rule a **Name** and select its **Weight Category**.
+3. Write a Python mathematical expression for the formula (e.g. `estimated_wait * 1.5 + (estimated_total_time / 10)`). You have access to variables: `estimated_wait`, `estimated_total_time`, `bus_id`, `operator`, and the global `context`.
+4. Click **"Create Rule"**. The rule compiles and runs immediately.
 
-### Example: Add a "priority bus" rule
+### 2. In Code Files (Permanent Pluggable Rules)
+Rules live in `scheduler/rules.py`. Each rule inherits from the base `Rule` class.
 
+#### Example: Add a "priority bus" rule
 ```python
 # In scheduler/rules.py
 
@@ -91,16 +97,22 @@ class PriorityBusBoost(Rule):
 # Add to DEFAULT_RULES list:
 DEFAULT_RULES.append(PriorityBusBoost())
 ```
-
 Then add `"priority": 1.5` to your scenario's `weights` dict.
 
 ---
 
 ## How to Add a New Scenario
 
-1. Create a new file `data/scenarios/scenario_6.json`
-2. Follow the same format:
+### 1. In the Frontend UI (Interactive Scenario Builder)
+1. Select the last option in the dropdown list: **"➕ Build Custom Scenario..."**.
+2. Fill in the scenario Name and Description.
+3. Configure default scenario weights.
+4. Add, edit, or delete buses inside the interactive departures table.
+5. Click **"⚡ Run Scenario (In-Memory)"** to test immediately, or click **"💾 Save Permanently to Disk & Run"** to write the scenario JSON file directly to the project's `data/scenarios/` directory.
 
+### 2. In Data Files (Manual Creation)
+1. Create a new file `data/scenarios/scenario_6.json`
+2. Follow the JSON format:
 ```json
 {
   "name": "Scenario 6 — My Custom Scenario",
@@ -116,7 +128,6 @@ Then add `"priority": 1.5` to your scenario's `weights` dict.
   ]
 }
 ```
-
 3. Restart the app — the new scenario appears in the dropdown automatically.
 
 ---
